@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <title>Subway Runner - Coins Edition</title>
+    <title>Subway Runner - Sound Edition</title>
     <script src="https://accounts.google.com/gsi/client" async defer></script>
     <style>
         body { margin: 0; overflow: hidden; background: #87CEEB; font-family: sans-serif; touch-action: none; }
@@ -25,6 +25,7 @@
         <div id="g-btn" class="g_id_signin" data-type="standard"></div>
         <button class="btn" id="start-btn">START GOOGLE RUN</button>
         <button class="btn" id="guest-btn">PLAY AS GUEST</button>
+        <p style="font-size: 12px; margin-top: 10px; opacity: 0.6;">(Music starts on Play)</p>
     </div>
 
     <div id="overlay">
@@ -39,26 +40,53 @@
     <script type="module">
         import * as THREE from 'three';
 
-        // --- 1. TEXTURES ---
+        // --- 1. SOUND SYSTEM (SYNTHESIZED) ---
+        const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+
+        function playSound(freq, type, duration, vol) {
+            const osc = audioCtx.createOscillator();
+            const gain = audioCtx.createGain();
+            osc.type = type;
+            osc.frequency.setValueAtTime(freq, audioCtx.currentTime);
+            gain.gain.setValueAtTime(vol, audioCtx.currentTime);
+            gain.gain.exponentialRampToValueAtTime(0.01, audioCtx.currentTime + duration);
+            osc.connect(gain);
+            gain.connect(audioCtx.destination);
+            osc.start();
+            osc.stop(audioCtx.currentTime + duration);
+        }
+
+        const sounds = {
+            jump: () => playSound(400, 'square', 0.2, 0.1),
+            coin: () => playSound(1000, 'sine', 0.1, 0.1),
+            crash: () => playSound(100, 'sawtooth', 0.5, 0.2),
+            music: () => {
+                const notes = [261.63, 329.63, 392.00, 523.25]; // C Major
+                let i = 0;
+                setInterval(() => {
+                    if (gameActive) playSound(notes[i++ % notes.length], 'triangle', 0.4, 0.05);
+                }, 500);
+            }
+        };
+
+        // --- 2. TEXTURES & WORLD (RETAINED FROM PREVIOUS) ---
         function makeTex(w, h, draw) {
             const canvas = document.createElement('canvas'); canvas.width = w; canvas.height = h;
             draw(canvas.getContext('2d'));
             const t = new THREE.CanvasTexture(canvas); t.wrapS = t.wrapT = THREE.RepeatWrapping; return t;
         }
-
         const roadTex = makeTex(256, 256, c => { c.fillStyle='#222'; c.fillRect(0,0,256,256); c.fillStyle='#444'; c.fillRect(0,120,256,16); });
         roadTex.repeat.set(1, 20);
         const houseTex = makeTex(256, 256, c => { c.fillStyle='#8B4513'; c.fillRect(0,0,256,256); c.fillStyle='#fff'; c.fillRect(40,40,60,60); c.fillRect(156,40,60,60); c.fillStyle='#444'; c.fillRect(100,160,56,96); });
         const trainTex = makeTex(256, 256, c => { c.fillStyle='#555'; c.fillRect(0,0,256,256); c.fillStyle='#00ffcc'; c.fillRect(0,50,256,40); c.fillStyle='#222'; c.fillRect(20,100,60,60); c.fillRect(170,100,60,60); });
 
-        // --- 2. SCENE ---
+        // --- 3. SCENE & CHARACTER ---
         const scene = new THREE.Scene(); scene.background = new THREE.Color(0x87CEEB); scene.fog = new THREE.Fog(0x87CEEB, 20, 140);
         const camera = new THREE.PerspectiveCamera(60, window.innerWidth/window.innerHeight, 0.1, 1000);
         const renderer = new THREE.WebGLRenderer({ antialias: true });
         renderer.setSize(window.innerWidth, window.innerHeight); document.body.appendChild(renderer.domElement);
         scene.add(new THREE.AmbientLight(0xffffff, 1));
 
-        // --- 3. CHARACTER ---
         const player = new THREE.Group();
         const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), new THREE.MeshPhongMaterial({color:0xffdbac})); head.position.y = 1.8;
         const torso = new THREE.Mesh(new THREE.BoxGeometry(0.8, 1.2, 0.5), new THREE.MeshPhongMaterial({color:0x333333})); torso.position.y = 1.0;
@@ -68,24 +96,24 @@
         const legR = legL.clone(); legR.position.x = 0.25;
         player.add(head, torso, armL, armR, legL, legR); scene.add(player);
 
-        // --- 4. WORLD ---
         const ground = new THREE.Mesh(new THREE.PlaneGeometry(10, 2000), new THREE.MeshPhongMaterial({ map: roadTex })); ground.rotation.x = -Math.PI/2; scene.add(ground);
         const grassL = new THREE.Mesh(new THREE.PlaneGeometry(100, 2000), new THREE.MeshPhongMaterial({ color: 0x2d5a27 })); grassL.rotation.x = -Math.PI/2; grassL.position.set(-55, -0.05, 0); scene.add(grassL);
         const grassR = grassL.clone(); grassR.position.x = 55; scene.add(grassR);
 
-        // --- 5. SPAWNER (TRAINS, HOUSES, COINS) ---
-        let gameActive = false, score = 0, lane = 1, objects = [], LANES = [-2.5, 0, 2.5];
+        // --- 4. GAME LOGIC ---
+        let gameActive = false, score = 0, lane = 1, objects = [], LANES = [-2.5, 0, 2.5], isJumping = false, yVel = 0;
+
         function spawn() {
             if (!gameActive) return;
             const z = -140;
             const l = LANES[Math.floor(Math.random()*3)];
             
-            // Spawn House
+            // House
             const side = Math.random() > 0.5 ? 1 : -1;
             const house = new THREE.Mesh(new THREE.BoxGeometry(6, 10, 6), new THREE.MeshPhongMaterial({map: houseTex}));
             house.position.set(side * 15, 5, z); house.isDeco = true; scene.add(house); objects.push(house);
 
-            // Spawn Train or Coin Line
+            // Train or Coin
             if (Math.random() > 0.6) {
                 const train = new THREE.Mesh(new THREE.BoxGeometry(2.4, 4, 18), new THREE.MeshPhongMaterial({map: trainTex}));
                 train.position.set(l, 2, z); scene.add(train); objects.push(train);
@@ -99,20 +127,7 @@
             setTimeout(spawn, 1000 - (score/100));
         }
 
-        // --- 6. CONTROLS ---
-        let sX, sY, isJumping = false, yVel = 0;
-        window.addEventListener('touchstart', e => { sX = e.touches[0].clientX; sY = e.touches[0].clientY; });
-        window.addEventListener('touchend', e => {
-            const dx = e.changedTouches[0].clientX - sX, dy = e.changedTouches[0].clientY - sY;
-            if (Math.abs(dx) > Math.abs(dy)) {
-                if (dx > 40 && lane < 2) lane++; if (dx < -40 && lane > 0) lane--;
-            } else {
-                if (dy < -40 && !isJumping) { isJumping = true; yVel = 0.4; }
-                if (dy > 40) { player.scale.y = 0.5; setTimeout(()=>player.scale.y=1, 500); }
-            }
-        });
-
-        // --- 7. GOOGLE & LOOP ---
+        // --- 5. GOOGLE & INPUTS ---
         window.handleCredentialResponse = (res) => {
             const data = JSON.parse(atob(res.credential.split('.')[1]));
             document.getElementById('status').innerText = "Hero: " + data.given_name;
@@ -120,8 +135,28 @@
             new THREE.TextureLoader().load(data.picture, t => { head.material.map = t; head.material.needsUpdate = true; });
         };
 
-        const start = () => { document.getElementById('menu').style.display='none'; gameActive=true; spawn(); animate(); };
-        document.getElementById('start-btn').onclick = start; document.getElementById('guest-btn').onclick = start;
+        const start = () => { 
+            audioCtx.resume(); 
+            document.getElementById('menu').style.display='none'; 
+            gameActive=true; 
+            spawn(); 
+            sounds.music();
+            animate(); 
+        };
+        document.getElementById('start-btn').onclick = start;
+        document.getElementById('guest-btn').onclick = start;
+
+        let sX, sY;
+        window.addEventListener('touchstart', e => { sX = e.touches[0].clientX; sY = e.touches[0].clientY; });
+        window.addEventListener('touchend', e => {
+            const dx = e.changedTouches[0].clientX - sX, dy = e.changedTouches[0].clientY - sY;
+            if (Math.abs(dx) > Math.abs(dy)) {
+                if (dx > 40 && lane < 2) lane++; if (dx < -40 && lane > 0) lane--;
+            } else {
+                if (dy < -40 && !isJumping) { isJumping = true; yVel = 0.4; sounds.jump(); }
+                if (dy > 40) { player.scale.y = 0.5; setTimeout(()=>player.scale.y=1, 500); }
+            }
+        });
 
         function animate() {
             if (!gameActive) return;
@@ -136,17 +171,14 @@
 
             objects.forEach((obj, i) => {
                 obj.position.z += 0.8;
-                if (obj.isCoin) obj.rotation.z += 0.1; // Spin coins
-                
+                if (obj.isCoin) obj.rotation.z += 0.1;
                 if (obj.position.z > 20) { scene.remove(obj); objects.splice(i, 1); }
                 else {
-                    const pBox = new THREE.Box3().setFromObject(player);
-                    const oBox = new THREE.Box3().setFromObject(obj);
-                    if (pBox.intersectsBox(oBox)) {
-                        if (obj.isCoin) {
-                            scene.remove(obj); objects.splice(i, 1); score += 500; // Coin Bonus
+                    if (new THREE.Box3().setFromObject(player).intersectsBox(new THREE.Box3().setFromObject(obj))) {
+                        if (obj.isCoin) { 
+                            sounds.coin(); scene.remove(obj); objects.splice(i, 1); score += 500; 
                         } else if (!obj.isDeco) {
-                            gameActive = false; document.getElementById('overlay').style.display = 'flex';
+                            sounds.crash(); gameActive = false; document.getElementById('overlay').style.display = 'flex';
                         }
                     }
                 }
